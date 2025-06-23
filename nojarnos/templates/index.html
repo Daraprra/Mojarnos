@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Juego de Roles</title>
+    <style>
+        body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; text-align: center; margin: 0; padding: 20px; }
+        .container { max-width: 600px; margin: auto; background-color: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
+        input, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; font-size: 16px; }
+        button { cursor: pointer; background-color: #007bff; border-color: #007bff; }
+        button:hover { background-color: #0056b3; }
+        .hidden { display: none; }
+        .player-list li { list-style: none; padding: 8px; margin: 4px 0; background-color: #2a2a2a; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .player-list li.dead { text-decoration: line-through; color: #888; }
+        .kill-btn { background-color: #dc3545; border-color: #dc3545; margin-left: 10px; }
+        .kill-btn:hover { background-color: #c82333; }
+        .role-badge { padding: 5px 10px; border-radius: 12px; color: white; }
+        .role-assassino { background-color: #dc3545; }
+        .role-aldeao { background-color: #007bff; }
+        .role-medico { background-color: #28a745; }
+        #game-log { text-align: left; max-height: 150px; overflow-y: auto; background: #2a2a2a; padding: 10px; border-radius: 5px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Juego de Roles</h1>
+
+    <div id="lobby-section">
+        <input type="text" id="name" placeholder="Tu Nombre" required>
+        <button id="create-btn">Crear Sala</button>
+        <hr>
+        <input type="text" id="room-code" placeholder="Código de la Sala" onkeyup="this.value = this.value.toUpperCase()">
+        <button id="join-btn">Unirse a Sala</button>
+    </div>
+
+    <div id="room-section" class="hidden">
+        <h2>Sala: <span id="room-id-display"></span></h2>
+        <h3>Tu Rol: <span id="my-role-display">Esperando...</span></h3>
+        <ul id="player-list" class="player-list"></ul>
+
+        <div id="host-controls" class="hidden">
+            <h4>Configurar Roles</h4>
+            <div id="role-inputs">
+                <div><label>Assassino:</label> <input type="number" id="role-assassino" value="1" min="0"></div>
+                <div><label>Médico:</label> <input type="number" id="role-medico" value="1" min="0"></div>
+                <div><label>Aldeão:</label> <input type="number" id="role-aldeao" value="2" min="0"></div>
+            </div>
+            <button id="start-game-btn">¡Empezar Juego!</button>
+        </div>
+
+        <div id="game-log"><div><strong>Registro de eventos:</strong></div></div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+    const socket = io();
+    let mySid = '';
+    let myRoomId = '';
+    let myRole = '';
+    let isHost = false;
+
+    // --- Elementos del DOM ---
+    const lobbySection = document.getElementById('lobby-section');
+    const roomSection = document.getElementById('room-section');
+    const hostControls = document.getElementById('host-controls');
+    const nameInput = document.getElementById('name');
+
+    // --- Lógica de Eventos del Cliente ---
+    document.getElementById('create-btn').onclick = () => {
+        if (nameInput.value) socket.emit('create_room', { name: nameInput.value });
+    };
+    document.getElementById('join-btn').onclick = () => {
+        if (nameInput.value && document.getElementById('room-code').value) {
+            socket.emit('join_room', { name: nameInput.value, room_id: document.getElementById('room-code').value });
+        }
+    };
+    document.getElementById('start-game-btn').onclick = () => {
+        const roles = {
+            'Assassino': parseInt(document.getElementById('role-assassino').value),
+            'Médico': parseInt(document.getElementById('role-medico').value),
+            'Aldeão': parseInt(document.getElementById('role-aldeao').value)
+        };
+        socket.emit('start_game', { room_id: myRoomId, roles: roles });
+    };
+
+    function killPlayer(targetSid) {
+        socket.emit('kill_player', { room_id: myRoomId, target_sid: targetSid });
+    }
+
+    // --- Escuchar Eventos del Servidor ---
+    socket.on('connect', () => { console.log('Conectado al servidor con SID:', socket.id); });
+
+    socket.on('room_created', (data) => {
+        mySid = data.sid;
+        myRoomId = data.room_id;
+        isHost = data.is_host;
+        showRoom();
+    });
+
+    socket.on('room_joined', (data) => {
+        mySid = data.sid;
+        myRoomId = data.room_id;
+        isHost = data.is_host;
+        showRoom();
+    });
+    
+    socket.on('update_players', (data) => {
+        const playerList = document.getElementById('player-list');
+        playerList.innerHTML = '';
+        data.players.forEach(player => {
+            const li = document.createElement('li');
+            li.textContent = `${player.name} ${player.sid === mySid ? '(Tú)' : ''}`;
+            if (player.status === 'dead') li.classList.add('dead');
+            
+            // Añadir botón de matar si soy Assassino y el objetivo está vivo y no soy yo
+            if (myRole === 'Assassino' && player.status === 'alive' && player.sid !== mySid) {
+                const killBtn = document.createElement('button');
+                killBtn.textContent = 'Matar';
+                killBtn.className = 'kill-btn';
+                killBtn.onclick = () => killPlayer(player.sid);
+                li.appendChild(killBtn);
+            }
+            playerList.appendChild(li);
+        });
+    });
+
+    socket.on('role_assigned', (data) => {
+        myRole = data.role;
+        const roleDisplay = document.getElementById('my-role-display');
+        roleDisplay.innerHTML = `<span class="role-badge role-${myRole.toLowerCase()}">${myRole}</span>`;
+    });
+
+    socket.on('game_started', () => {
+        logEvent('¡El juego ha comenzado!');
+        hostControls.classList.add('hidden');
+    });
+
+    socket.on('you_died', (data) => {
+        logEvent(`Has muerto. Asesino: ${data.killer_name}.`, 'error');
+    });
+
+    socket.on('player_died', (data) => {
+        logEvent(`${data.victim_name} ha muerto. Su rol era: ${data.victim_role}.`, 'info');
+    });
+
+    socket.on('error', (data) => {
+        alert('Error: ' + data.message);
+    });
+
+    // --- Funciones de Utilidad ---
+    function showRoom() {
+        lobbySection.classList.add('hidden');
+        roomSection.classList.remove('hidden');
+        document.getElementById('room-id-display').textContent = myRoomId;
+        if (isHost) hostControls.classList.remove('hidden');
+    }
+
+    function logEvent(message, type = 'normal') {
+        const log = document.getElementById('game-log');
+        const entry = document.createElement('div');
+        entry.textContent = message;
+        if (type === 'error') entry.style.color = '#dc3545';
+        if (type === 'info') entry.style.color = '#17a2b8';
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+    }
+</script>
+</body>
+</html>
