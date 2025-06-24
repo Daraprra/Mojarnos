@@ -1,11 +1,11 @@
-# app.py (Versión 2.3)
+# app.py (Versión 2.4)
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room, leave_room, emit
 import random
 import uuid
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'mi-pasaporte-digital-secreto'
+app.config['SECRET_KEY'] = 'mi-pasaporte-digital-secreto-v2.4'
 socketio = SocketIO(app)
 
 game_rooms = {}
@@ -22,13 +22,65 @@ def handle_reconnect(data):
         if player_id in room_data['players']:
             player = room_data['players'][player_id]
             player['sid'] = request.sid
-            player['status'] = 'alive'
+            # CORRECCIÓN BUG "REVIVIR": Eliminamos la línea que te ponía 'alive' automáticamente.
+            # player['status'] = 'alive' 
             join_room(room_id)
-            emit('session_restored', {'room_id': room_id, 'is_host': room_data['host'] == player_id, 'role': player['role']})
+            emit('session_restored', {'room_id': room_id, 'is_host': room_data['host'] == player_id, 'role': player['role'], 'status': player['status']})
             update_player_list(room_id)
             print(f"Jugador {player['name']} ({player_id}) reconectado a la sala {room_id}.")
             return
 
+@socketio.on('leave_room')
+def handle_leave_room(data):
+    room_id = data.get('room_id')
+    player_sid = request.sid
+    room = game_rooms.get(room_id)
+    if not room: return
+    player_id_to_remove = None
+    for pid, pdata in room['players'].items():
+        if pdata.get('sid') == player_sid:
+            player_id_to_remove = pid
+            break
+    if player_id_to_remove:
+        player_name = room['players'][player_id_to_remove]['name']
+        del room['players'][player_id_to_remove]
+        print(f"Jugador {player_name} ha salido de la sala {room_id}.")
+        leave_room(room_id)
+        if not room['players']:
+            del game_rooms[room_id]
+            print(f"Sala {room_id} vacía. Eliminada.")
+        else:
+            update_player_list(room_id)
+
+@socketio.on('kill_player')
+def handle_kill_player(data):
+    room_id = data.get('room_id')
+    target_id = data.get('target_id')
+    killer_sid = request.sid
+    room = game_rooms.get(room_id)
+    if not room: return
+    killer_id = next((pid for pid, p in room['players'].items() if p.get('sid') == killer_sid), None)
+    if not killer_id: return
+    killer_info = room['players'].get(killer_id)
+    victim_info = room['players'].get(target_id)
+    
+    # CORRECCIÓN BUG "MUERTOS MATAN": Añadimos la comprobación de que el asesino esté vivo.
+    if not (killer_info and victim_info and victim_info['status'] == 'alive' and killer_info['status'] == 'alive'): 
+        return
+
+    victim_info['status'] = 'dead'
+    emit('you_died', {'killer_name': killer_info['name']}, to=victim_info['sid'])
+    emit('player_died', {'victim_name': victim_info['name'], 'victim_role': victim_info['role']}, to=room_id)
+    update_player_list(room_id)
+    if victim_info['role'] == killer_info['role']:
+        killer_info['status'] = 'dead'
+        emit('you_died', {'killer_name': 'a ti mismo por traición'}, to=killer_info['sid'])
+        socketio.sleep(0.1) 
+        emit('player_died', {'victim_name': killer_info['name'], 'victim_role': killer_info['role']}, to=room_id)
+        update_player_list(room_id)
+
+# El resto del código de app.py (create_room, join_room, start_game, etc.) permanece igual que en la v2.3
+# Lo incluyo todo para que el archivo esté completo.
 @socketio.on('create_room')
 def handle_create_room(data):
     player_name = data.get('name', 'Anónimo')
@@ -69,30 +121,6 @@ def handle_disconnect():
                 print(f"Jugador {player['name']} desconectado temporalmente.")
                 return
 
-# --- NUEVA FUNCIÓN ---
-@socketio.on('leave_room')
-def handle_leave_room(data):
-    room_id = data.get('room_id')
-    player_sid = request.sid
-    room = game_rooms.get(room_id)
-    if not room: return
-    player_id_to_remove = None
-    for pid, pdata in room['players'].items():
-        if pdata.get('sid') == player_sid:
-            player_id_to_remove = pid
-            break
-    if player_id_to_remove:
-        player_name = room['players'][player_id_to_remove]['name']
-        del room['players'][player_id_to_remove]
-        print(f"Jugador {player_name} ha salido de la sala {room_id}.")
-        leave_room(room_id)
-        if not room['players']:
-            del game_rooms[room_id]
-            print(f"Sala {room_id} vacía. Eliminada.")
-        else:
-            update_player_list(room_id)
-# --- FIN DE LA NUEVA FUNCIÓN ---
-
 @socketio.on('start_game')
 def handle_start_game(data):
     room_id = data.get('room_id')
@@ -114,29 +142,6 @@ def handle_start_game(data):
     room['game_state'] = 'in_game'
     emit('game_started', to=room_id)
     update_player_list(room_id)
-
-@socketio.on('kill_player')
-def handle_kill_player(data):
-    room_id = data.get('room_id')
-    target_id = data.get('target_id')
-    killer_sid = request.sid
-    room = game_rooms.get(room_id)
-    if not room: return
-    killer_id = next((pid for pid, p in room['players'].items() if p.get('sid') == killer_sid), None)
-    if not killer_id: return
-    killer_info = room['players'].get(killer_id)
-    victim_info = room['players'].get(target_id)
-    if not (killer_info and victim_info and victim_info['status'] == 'alive'): return
-    victim_info['status'] = 'dead'
-    emit('you_died', {'killer_name': killer_info['name']}, to=victim_info['sid'])
-    emit('player_died', {'victim_name': victim_info['name'], 'victim_role': victim_info['role']}, to=room_id)
-    update_player_list(room_id)
-    if victim_info['role'] == killer_info['role']:
-        killer_info['status'] = 'dead'
-        emit('you_died', {'killer_name': 'a ti mismo por traición'}, to=killer_info['sid'])
-        socketio.sleep(0.1) 
-        emit('player_died', {'victim_name': killer_info['name'], 'victim_role': killer_info['role']}, to=room_id)
-        update_player_list(room_id)
 
 def update_player_list(room_id):
     room = game_rooms.get(room_id)
