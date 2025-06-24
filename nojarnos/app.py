@@ -14,6 +14,7 @@ game_rooms = {}
 
 @app.route('/')
 def index():
+    """Sirve la página principal del juego."""
     return render_template('index.html')
 
 # --- NUEVO: Evento de Reconexión ---
@@ -91,24 +92,16 @@ def handle_disconnect():
                 # update_player_list(room_id)
                 return
 
-# El resto de la lógica de juego permanece casi igual, pero ahora usa playerId
-# (El código es el mismo, pero el contexto de cómo encuentra al jugador ha cambiado)
-# ... [el resto de funciones como start_game, kill_player, update_player_list van aquí,
-#      asegurándose de que usan la nueva estructura de datos, aunque el código
-#      de la lógica en sí no necesita grandes cambios] ...
-
-# ... pegaré el resto para evitar confusiones, aunque los cambios son mínimos ...
 @socketio.on('start_game')
 def handle_start_game(data):
     room_id = data.get('room_id')
     custom_roles = data.get('roles', {})
     
     room = game_rooms.get(room_id)
-    # Ahora la comprobación de host se hace con playerId
-    # (El request.sid sigue funcionando para saber quién envió el evento)
     if not room: return
+    # Encuentra el playerId del que envía el evento a través de su socket.id
     host_id = next((pid for pid, p in room['players'].items() if p.get('sid') == request.sid), None)
-    if host_id != room.get('host'): return
+    if not host_id or host_id != room.get('host'): return
 
     players_ids = list(room['players'].keys())
     role_list = [role for role, count in custom_roles.items() for _ in range(int(count))]
@@ -132,14 +125,12 @@ def handle_start_game(data):
 @socketio.on('kill_player')
 def handle_kill_player(data):
     room_id = data.get('room_id')
-    # El cliente ahora enviará el playerId del objetivo
     target_id = data.get('target_id')
     killer_sid = request.sid
 
     room = game_rooms.get(room_id)
     if not room: return
 
-    # Encuentra al asesino y a la víctima por sus IDs
     killer_id = next((pid for pid, p in room['players'].items() if p.get('sid') == killer_sid), None)
     if not killer_id: return
 
@@ -163,7 +154,6 @@ def handle_kill_player(data):
 def update_player_list(room_id):
     room = game_rooms.get(room_id)
     if room:
-        # Ahora player_data incluye el playerId permanente
         player_data = [{'id': pid, 'name': p['name'], 'status': p['status']} for pid, p in room['players'].items()]
         emit('update_players', {'players': player_data, 'game_state': room['game_state']}, to=room_id)
 
