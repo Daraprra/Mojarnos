@@ -1,171 +1,254 @@
-# app.py (Versión 2.2 - Con persistencia de sesión)
-from flask import Flask, render_template, request
-from flask_socketio import SocketIO, join_room, leave_room, emit
-import random
-import uuid # Necesario para generar IDs únicos
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Juego de Roles v2.2</title>
+    <style>
+        body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; text-align: center; margin: 0; padding: 20px; }
+        .container { max-width: 600px; margin: auto; background-color: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
+        input, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; font-size: 16px; width: calc(100% - 22px); }
+        button { cursor: pointer; background-color: #007bff; border-color: #007bff; width: auto; }
+        button:hover:not(:disabled) { background-color: #0056b3; }
+        button:disabled { background-color: #555; border-color: #555; cursor: not-allowed; }
+        .hidden { display: none; }
+        ul { padding: 0; }
+        .player-list li, .role-list li { list-style: none; padding: 8px; margin: 4px 0; background-color: #2a2a2a; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .player-list li.dead { text-decoration: line-through; color: #888; }
+        .kill-btn, .remove-role-btn { background-color: #dc3545; border-color: #dc3545; margin-left: 10px; padding: 5px 10px; font-size: 14px; }
+        .kill-btn:hover, .remove-role-btn:hover { background-color: #c82333; }
+        #game-log { text-align: left; max-height: 150px; overflow-y: auto; background: #2a2a2a; padding: 10px; border-radius: 5px; margin-top: 20px; }
+    </style>
+</head>
+<body>
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'mi-pasaporte-digital-secreto'
-socketio = SocketIO(app)
+<div class="container">
+    <h1 id="main-title">Bienvenido al Juego de Roles</h1>
 
-# La estructura de datos ahora usa un playerId permanente como clave
-game_rooms = {}
-# Ejemplo: { "ROOM123": { "players": { "uuid1": {"name": "Ana", "sid": "sid_actual", ...} } } }
+    <div id="name-section">
+        <h3>Paso 1: Elige tu nombre</h3>
+        <input type="text" id="name" placeholder="Tu Nombre" required>
+        <button id="submit-name-btn">Continuar</button>
+    </div>
 
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-# --- NUEVO: Evento de Reconexión ---
-@socketio.on('reconnect_player')
-def handle_reconnect(data):
-    player_id = data.get('playerId')
-    if not player_id: return
-
-    # Busca al jugador en todas las salas
-    for room_id, room_data in game_rooms.items():
-        if player_id in room_data['players']:
-            player = room_data['players'][player_id]
-            player['sid'] = request.sid # Actualiza con el nuevo socket.id
-            player['status'] = 'alive' # Por si se marcó como desconectado
-            join_room(room_id)
-
-            # Re-sincroniza el estado del jugador
-            emit('session_restored', {
-                'room_id': room_id,
-                'is_host': room_data['host'] == player_id,
-                'role': player['role']
-            })
-            update_player_list(room_id)
-            print(f"Jugador {player['name']} ({player_id}) reconectado a la sala {room_id}.")
-            return
-
-@socketio.on('create_room')
-def handle_create_room(data):
-    player_name = data.get('name', 'Anónimo')
-    player_sid = request.sid
-    player_id = str(uuid.uuid4()) # Genera el "pasaporte"
-    room_id = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=5))
+    <div id="selection-section" class="hidden">
+        <h3>Paso 2: ¿Qué quieres hacer, <span id="player-name-display"></span>?</h3>
+        <button id="create-btn">Crear Sala Nueva</button>
+        <button id="show-join-btn">Unirse a una Sala</button>
+        <div id="join-input-section" class="hidden">
+            <input type="text" id="room-code" placeholder="Código de la Sala" onkeyup="this.value = this.value.toUpperCase()">
+            <button id="join-btn">Unirse</button>
+        </div>
+    </div>
     
-    game_rooms[room_id] = {
-        'players': {player_id: {'name': player_name, 'role': None, 'status': 'alive', 'sid': player_sid}},
-        'game_state': 'lobby',
-        'host': player_id
+    <div id="room-section" class="hidden">
+        <h2>Sala: <span id="room-id-display"></span></h2>
+        <h3>Tu Rol: <span id="my-role-display">Esperando...</span></h3>
+        <ul id="player-list" class="player-list"></ul>
+        <div id="host-controls" class="hidden">
+            <hr><h4>Configuración de Roles (Anfitrión)</h4>
+            <div id="custom-role-creator">
+                <input type="text" id="new-role-name" placeholder="Nombre del Rol">
+                <input type="number" id="new-role-count" value="1" min="1" placeholder="Cantidad">
+                <button id="add-role-btn">Añadir Rol</button>
+            </div>
+            <ul id="custom-roles-list" class="role-list"></ul>
+            <button id="start-game-btn" disabled>Empezar Juego</button>
+        </div>
+        <div id="game-log"><div><strong>Registro de eventos:</strong></div></div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+    const socket = io();
+    let myPlayerId = '', myRoomId = '', myRole = '', myName = '';
+    let isHost = false;
+    let customRoles = {};
+    let players = [];
+
+    // --- Elementos del DOM ---
+    // (Se obtienen dinámicamente para simplificar)
+
+    // --- LÓGICA PRINCIPAL AL CARGAR LA PÁGINA ---
+    window.onload = () => {
+        myPlayerId = localStorage.getItem('playerId');
+        if (myPlayerId) {
+            console.log('Encontrado playerId guardado:', myPlayerId, '. Intentando reconectar...');
+            socket.emit('reconnect_player', { playerId: myPlayerId });
+        }
+    };
+
+    // --- Eventos de UI ---
+    document.getElementById('submit-name-btn').onclick = () => {
+        myName = document.getElementById('name').value;
+        if (myName) {
+            document.getElementById('name-section').classList.add('hidden');
+            document.getElementById('selection-section').classList.remove('hidden');
+            document.getElementById('player-name-display').textContent = myName;
+        }
+    };
+    
+    document.getElementById('show-join-btn').onclick = () => {
+        document.getElementById('join-input-section').classList.toggle('hidden');
+    };
+
+    document.getElementById('create-btn').onclick = () => socket.emit('create_room', { name: myName });
+    document.getElementById('join-btn').onclick = () => {
+        if (document.getElementById('room-code').value) {
+            socket.emit('join_room', { name: myName, room_id: document.getElementById('room-code').value });
+        }
+    };
+    
+    document.getElementById('add-role-btn').onclick = () => {
+        const name = document.getElementById('new-role-name').value;
+        const count = document.getElementById('new-role-count').value;
+        if (name && count > 0) {
+            customRoles[name] = count;
+            document.getElementById('new-role-name').value = '';
+            document.getElementById('new-role-count').value = 1;
+            updateCustomRolesList();
+        }
+    };
+
+    document.getElementById('start-game-btn').onclick = () => {
+        socket.emit('start_game', { room_id: myRoomId, roles: customRoles });
+    };
+
+    function killPlayer(targetId) {
+        socket.emit('kill_player', { room_id: myRoomId, target_id: targetId });
+    }
+
+    // --- Escuchar Eventos del Servidor ---
+    socket.on('room_created', (data) => {
+        saveSession(data.playerId, data.room_id, data.is_host);
+        showRoom();
+    });
+
+    socket.on('room_joined', (data) => {
+        saveSession(data.playerId, data.room_id, data.is_host);
+        showRoom();
+    });
+    
+    // NUEVO: El servidor confirma que la sesión se ha restaurado
+    socket.on('session_restored', (data) => {
+        console.log('¡Sesión restaurada con éxito!');
+        myRoomId = data.room_id;
+        isHost = data.is_host;
+        myRole = data.role;
+        document.getElementById('my-role-display').textContent = myRole || 'Esperando...';
+        showRoom();
+        requestNotificationPermission();
+    });
+
+    socket.on('update_players', (data) => {
+        players = data.players;
+        const playerList = document.getElementById('player-list');
+        playerList.innerHTML = '';
+        const isGameStarted = data.game_state === 'in_game';
+
+        players.forEach(player => {
+            const li = document.createElement('li');
+            li.textContent = `${player.name} ${player.id === myPlayerId ? '(Tú)' : ''}`;
+            if (player.status === 'dead') li.classList.add('dead');
+            
+            if (isGameStarted && player.status === 'alive' && player.id !== myPlayerId) {
+                const killBtn = document.createElement('button');
+                killBtn.textContent = 'Matar';
+                killBtn.className = 'kill-btn';
+                killBtn.onclick = () => killPlayer(player.id);
+                li.appendChild(killBtn);
+            }
+            playerList.appendChild(li);
+        });
+        checkStartButtonState();
+    });
+
+    socket.on('role_assigned', (data) => {
+        myRole = data.role;
+        document.getElementById('my-role-display').textContent = myRole;
+    });
+
+    socket.on('game_started', () => { logEvent('¡El juego ha comenzado!'); document.getElementById('host-controls').classList.add('hidden'); });
+    socket.on('you_died', (data) => { showNotification('Has sido eliminado', `Asesino: ${data.killer_name}`); });
+    socket.on('player_died', (data) => { showNotification('¡Un jugador ha muerto!', `${data.victim_name} (Rol: ${data.victim_role}) ha sido eliminado.`); });
+    socket.on('error', (data) => { alert('Error: ' + data.message); });
+
+    // --- Funciones de Utilidad ---
+    function saveSession(playerId, roomId, isHostStatus) {
+        localStorage.setItem('playerId', playerId);
+        myPlayerId = playerId;
+        myRoomId = roomId;
+        isHost = isHostStatus;
+    }
+
+    function showRoom() {
+        document.getElementById('name-section').classList.add('hidden');
+        document.getElementById('selection-section').classList.add('hidden');
+        document.getElementById('room-section').classList.remove('hidden');
+        document.getElementById('main-title').textContent = "Sala de Juego";
+        document.getElementById('room-id-display').textContent = myRoomId;
+        if (isHost) document.getElementById('host-controls').classList.remove('hidden');
+        requestNotificationPermission();
     }
     
-    join_room(room_id)
-    print(f"Sala {room_id} creada por {player_name} ({player_id}).")
-    emit('room_created', {'room_id': room_id, 'playerId': player_id, 'is_host': True})
-    update_player_list(room_id)
+    // (El resto de funciones como updateCustomRolesList, checkStartButtonState, logEvent, notificaciones...)
+    // ... (pegando el resto para que sea completo)
+    function updateCustomRolesList() {
+        const list = document.getElementById('custom-roles-list');
+        list.innerHTML = '';
+        for (const roleName in customRoles) {
+            const li = document.createElement('li');
+            li.textContent = `${roleName}: ${customRoles[roleName]}`;
+            const removeBtn = document.createElement('button');
+            removeBtn.textContent = 'X';
+            removeBtn.className = 'remove-role-btn';
+            removeBtn.onclick = () => {
+                delete customRoles[roleName];
+                updateCustomRolesList();
+            };
+            li.appendChild(removeBtn);
+            list.appendChild(li);
+        }
+        checkStartButtonState();
+    }
 
-@socketio.on('join_room')
-def handle_join_room(data):
-    player_name = data.get('name', 'Anónimo')
-    room_id = data.get('room_id', '').upper()
-    player_sid = request.sid
-    player_id = str(uuid.uuid4())
+    function checkStartButtonState() {
+        if (!isHost) return;
+        const totalPlayers = players.length;
+        const totalRoles = Object.values(customRoles).reduce((sum, count) => sum + parseInt(count || 0), 0);
+        const startButton = document.getElementById('start-game-btn');
+        startButton.disabled = totalPlayers !== totalRoles || totalPlayers < 3;
+        
+        if (startButton.disabled) {
+            startButton.textContent = (totalPlayers < 3) ? 'Se necesitan 3 o más jugadores' : 'Jugadores y Roles deben coincidir';
+        } else {
+            startButton.textContent = '¡Empezar Juego!';
+        }
+    }
 
-    if room_id in game_rooms:
-        room = game_rooms[room_id]
-        if room['game_state'] == 'lobby':
-            room['players'][player_id] = {'name': player_name, 'role': None, 'status': 'alive', 'sid': player_sid}
-            join_room(room_id)
-            print(f"{player_name} se unió a la sala {room_id}.")
-            emit('room_joined', {'room_id': room_id, 'playerId': player_id, 'is_host': False})
-            update_player_list(room_id)
-        else:
-            emit('error', {'message': 'El juego ya ha comenzado en esta sala.'})
-    else:
-        emit('error', {'message': 'La sala no existe.'})
+    function logEvent(message, type = 'normal') {
+        const log = document.getElementById('game-log');
+        const entry = document.createElement('div');
+        entry.textContent = message;
+        if (type === 'error') entry.style.color = '#dc3545';
+        if (type === 'info') entry.style.color = '#17a2b8';
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+    }
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    player_sid = request.sid
-    # Cuando un jugador se desconecta, no lo borramos, solo limpiamos su SID temporal
-    for room_id, room_data in game_rooms.items():
-        for player_id, player in room_data['players'].items():
-            if player.get('sid') == player_sid:
-                print(f"Jugador {player['name']} desconectado temporalmente.")
-                # Opcional: podrías marcar su estado como 'disconnected'
-                # player['status'] = 'disconnected' 
-                # update_player_list(room_id)
-                return
+    function requestNotificationPermission() {
+        if ("Notification" in window && Notification.permission !== "denied") {
+            Notification.requestPermission();
+        }
+    }
 
-# El resto de la lógica de juego permanece casi igual, pero ahora usa playerId
-# (El código es el mismo, pero el contexto de cómo encuentra al jugador ha cambiado)
-# ... [el resto de funciones como start_game, kill_player, update_player_list van aquí,
-#      asegurándose de que usan la nueva estructura de datos, aunque el código
-#      de la lógica en sí no necesita grandes cambios] ...
-
-# ... pegaré el resto para evitar confusiones, aunque los cambios son mínimos ...
-@socketio.on('start_game')
-def handle_start_game(data):
-    room_id = data.get('room_id')
-    custom_roles = data.get('roles', {})
-    
-    room = game_rooms.get(room_id)
-    # Ahora la comprobación de host se hace con playerId
-    # (El request.sid sigue funcionando para saber quién envió el evento)
-    if not room: return
-    host_id = next((pid for pid, p in room['players'].items() if p.get('sid') == request.sid), None)
-    if host_id != room.get('host'): return
-
-    players_ids = list(room['players'].keys())
-    role_list = [role for role, count in custom_roles.items() for _ in range(int(count))]
-    
-    if len(role_list) != len(players_ids):
-        emit('error', {'message': 'El número de roles no coincide con el de jugadores.'})
-        return
-
-    random.shuffle(role_list)
-    
-    for player_id, role in zip(players_ids, role_list):
-        player = room['players'][player_id]
-        player['role'] = role
-        # Envía el rol al socket.id actual de ese jugador
-        emit('role_assigned', {'role': role}, to=player['sid'])
-
-    room['game_state'] = 'in_game'
-    emit('game_started', to=room_id)
-    update_player_list(room_id)
-
-@socketio.on('kill_player')
-def handle_kill_player(data):
-    room_id = data.get('room_id')
-    # El cliente ahora enviará el playerId del objetivo
-    target_id = data.get('target_id')
-    killer_sid = request.sid
-
-    room = game_rooms.get(room_id)
-    if not room: return
-
-    # Encuentra al asesino y a la víctima por sus IDs
-    killer_id = next((pid for pid, p in room['players'].items() if p.get('sid') == killer_sid), None)
-    if not killer_id: return
-
-    killer_info = room['players'].get(killer_id)
-    victim_info = room['players'].get(target_id)
-
-    if not (killer_info and victim_info and victim_info['status'] == 'alive'): return
-
-    victim_info['status'] = 'dead'
-    emit('you_died', {'killer_name': killer_info['name']}, to=victim_info['sid'])
-    emit('player_died', {'victim_name': victim_info['name'], 'victim_role': victim_info['role']}, to=room_id)
-    update_player_list(room_id)
-
-    if victim_info['role'] == killer_info['role']:
-        killer_info['status'] = 'dead'
-        emit('you_died', {'killer_name': 'a ti mismo por traición'}, to=killer_info['sid'])
-        socketio.sleep(0.1) 
-        emit('player_died', {'victim_name': killer_info['name'], 'victim_role': killer_info['role']}, to=room_id)
-        update_player_list(room_id)
-
-def update_player_list(room_id):
-    room = game_rooms.get(room_id)
-    if room:
-        # Ahora player_data incluye el playerId permanente
-        player_data = [{'id': pid, 'name': p['name'], 'status': p['status']} for pid, p in room['players'].items()]
-        emit('update_players', {'players': player_data, 'game_state': room['game_state']}, to=room_id)
-
-if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    function showNotification(title, body) {
+        logEvent(body); // Siempre muestra en el log
+        if ("Notification" in window && Notification.permission === "granted") {
+            new Notification(title, { body: body, icon: 'https://cdn-icons-png.flaticon.com/512/3039/3039437.png' });
+        }
+    }
+</script>
+</body>
+</html>
