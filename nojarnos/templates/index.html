@@ -3,51 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Juego de Roles</title>
+    <title>Juego de Roles v2</title>
     <style>
         body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; text-align: center; margin: 0; padding: 20px; }
         .container { max-width: 600px; margin: auto; background-color: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
-        input, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; font-size: 16px; }
-        button { cursor: pointer; background-color: #007bff; border-color: #007bff; }
+        input, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; font-size: 16px; width: calc(100% - 22px); }
+        button { cursor: pointer; background-color: #007bff; border-color: #007bff; width: auto; }
         button:hover { background-color: #0056b3; }
         .hidden { display: none; }
-        .player-list li { list-style: none; padding: 8px; margin: 4px 0; background-color: #2a2a2a; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        ul { padding: 0; }
+        .player-list li, .role-list li { list-style: none; padding: 8px; margin: 4px 0; background-color: #2a2a2a; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
         .player-list li.dead { text-decoration: line-through; color: #888; }
-        .kill-btn { background-color: #dc3545; border-color: #dc3545; margin-left: 10px; }
-        .kill-btn:hover { background-color: #c82333; }
-        .role-badge { padding: 5px 10px; border-radius: 12px; color: white; }
-        .role-assassino { background-color: #dc3545; }
-        .role-aldeao { background-color: #007bff; }
-        .role-medico { background-color: #28a745; }
+        .kill-btn, .remove-role-btn { background-color: #dc3545; border-color: #dc3545; margin-left: 10px; padding: 5px 10px; font-size: 14px; }
+        .kill-btn:hover, .remove-role-btn:hover { background-color: #c82333; }
         #game-log { text-align: left; max-height: 150px; overflow-y: auto; background: #2a2a2a; padding: 10px; border-radius: 5px; margin-top: 20px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>Juego de Roles</h1>
+    <h1 id="main-title">Bienvenido al Juego de Roles</h1>
 
-    <div id="lobby-section">
+    <div id="name-section">
+        <h3>Paso 1: Elige tu nombre</h3>
         <input type="text" id="name" placeholder="Tu Nombre" required>
-        <button id="create-btn">Crear Sala</button>
-        <hr>
-        <input type="text" id="room-code" placeholder="Código de la Sala" onkeyup="this.value = this.value.toUpperCase()">
-        <button id="join-btn">Unirse a Sala</button>
+        <button id="submit-name-btn">Continuar</button>
     </div>
 
+    <div id="selection-section" class="hidden">
+        <h3>Paso 2: ¿Qué quieres hacer, <span id="player-name-display"></span>?</h3>
+        <button id="create-btn">Crear Sala Nueva</button>
+        <button id="show-join-btn">Unirse a una Sala</button>
+        <div id="join-input-section" class="hidden">
+            <input type="text" id="room-code" placeholder="Código de la Sala" onkeyup="this.value = this.value.toUpperCase()">
+            <button id="join-btn">Unirse</button>
+        </div>
+    </div>
+    
     <div id="room-section" class="hidden">
         <h2>Sala: <span id="room-id-display"></span></h2>
         <h3>Tu Rol: <span id="my-role-display">Esperando...</span></h3>
         <ul id="player-list" class="player-list"></ul>
 
         <div id="host-controls" class="hidden">
-            <h4>Configurar Roles</h4>
-            <div id="role-inputs">
-                <div><label>Assassino:</label> <input type="number" id="role-assassino" value="1" min="0"></div>
-                <div><label>Médico:</label> <input type="number" id="role-medico" value="1" min="0"></div>
-                <div><label>Aldeão:</label> <input type="number" id="role-aldeao" value="2" min="0"></div>
+            <hr><h4>Configuración de Roles (Anfitrión)</h4>
+            <div id="custom-role-creator">
+                <input type="text" id="new-role-name" placeholder="Nombre del Rol (ej: Bruja)">
+                <input type="number" id="new-role-count" value="1" min="1" placeholder="Cantidad">
+                <button id="add-role-btn">Añadir Rol</button>
             </div>
-            <button id="start-game-btn">¡Empezar Juego!</button>
+            <ul id="custom-roles-list" class="role-list"></ul>
+            <button id="start-game-btn" disabled>¡Empezar Juego!</button>
         </div>
 
         <div id="game-log"><div><strong>Registro de eventos:</strong></div></div>
@@ -57,33 +63,53 @@
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
     const socket = io();
-    let mySid = '';
-    let myRoomId = '';
-    let myRole = '';
+    let mySid = '', myRoomId = '', myRole = '', myName = '';
     let isHost = false;
+    let customRoles = {};
 
     // --- Elementos del DOM ---
-    const lobbySection = document.getElementById('lobby-section');
+    const nameSection = document.getElementById('name-section');
+    const selectionSection = document.getElementById('selection-section');
+    const joinInputSection = document.getElementById('join-input-section');
     const roomSection = document.getElementById('room-section');
     const hostControls = document.getElementById('host-controls');
-    const nameInput = document.getElementById('name');
 
-    // --- Lógica de Eventos del Cliente ---
-    document.getElementById('create-btn').onclick = () => {
-        if (nameInput.value) socket.emit('create_room', { name: nameInput.value });
-    };
-    document.getElementById('join-btn').onclick = () => {
-        if (nameInput.value && document.getElementById('room-code').value) {
-            socket.emit('join_room', { name: nameInput.value, room_id: document.getElementById('room-code').value });
+    // --- Flujo de UI ---
+    document.getElementById('submit-name-btn').onclick = () => {
+        myName = document.getElementById('name').value;
+        if (myName) {
+            nameSection.classList.add('hidden');
+            selectionSection.classList.remove('hidden');
+            document.getElementById('player-name-display').textContent = myName;
+            document.getElementById('main-title').textContent = "Juego de Roles";
         }
     };
+    
+    document.getElementById('show-join-btn').onclick = () => {
+        joinInputSection.classList.toggle('hidden');
+    };
+
+    // --- Lógica de Eventos del Cliente ---
+    document.getElementById('create-btn').onclick = () => socket.emit('create_room', { name: myName });
+    document.getElementById('join-btn').onclick = () => {
+        if (document.getElementById('room-code').value) {
+            socket.emit('join_room', { name: myName, room_id: document.getElementById('room-code').value });
+        }
+    };
+    
+    document.getElementById('add-role-btn').onclick = () => {
+        const name = document.getElementById('new-role-name').value;
+        const count = document.getElementById('new-role-count').value;
+        if (name && count > 0) {
+            customRoles[name] = count;
+            document.getElementById('new-role-name').value = '';
+            document.getElementById('new-role-count').value = 1;
+            updateCustomRolesList();
+        }
+    };
+
     document.getElementById('start-game-btn').onclick = () => {
-        const roles = {
-            'Assassino': parseInt(document.getElementById('role-assassino').value),
-            'Médico': parseInt(document.getElementById('role-medico').value),
-            'Aldeão': parseInt(document.getElementById('role-aldeao').value)
-        };
-        socket.emit('start_game', { room_id: myRoomId, roles: roles });
+        socket.emit('start_game', { room_id: myRoomId, roles: customRoles });
     };
 
     function killPlayer(targetSid) {
@@ -91,17 +117,15 @@
     }
 
     // --- Escuchar Eventos del Servidor ---
-    socket.on('connect', () => { console.log('Conectado al servidor con SID:', socket.id); });
+    socket.on('connect', () => { mySid = socket.id; });
 
     socket.on('room_created', (data) => {
-        mySid = data.sid;
         myRoomId = data.room_id;
         isHost = data.is_host;
         showRoom();
     });
 
     socket.on('room_joined', (data) => {
-        mySid = data.sid;
         myRoomId = data.room_id;
         isHost = data.is_host;
         showRoom();
@@ -110,13 +134,15 @@
     socket.on('update_players', (data) => {
         const playerList = document.getElementById('player-list');
         playerList.innerHTML = '';
+        const isGameStarted = data.game_state === 'in_game';
+
         data.players.forEach(player => {
             const li = document.createElement('li');
             li.textContent = `${player.name} ${player.sid === mySid ? '(Tú)' : ''}`;
             if (player.status === 'dead') li.classList.add('dead');
             
-            // Añadir botón de matar si soy Assassino y el objetivo está vivo y no soy yo
-            if (myRole === 'Assassino' && player.status === 'alive' && player.sid !== mySid) {
+            // TODOS PUEDEN MATAR: Añadir botón de matar si el juego ha empezado, el objetivo está vivo y no soy yo
+            if (isGameStarted && player.status === 'alive' && player.sid !== mySid) {
                 const killBtn = document.createElement('button');
                 killBtn.textContent = 'Matar';
                 killBtn.className = 'kill-btn';
@@ -125,12 +151,16 @@
             }
             playerList.appendChild(li);
         });
+        
+        // Activa o desactiva el botón de empezar partida
+        const totalPlayers = data.players.length;
+        const totalRoles = Object.values(customRoles).reduce((sum, count) => sum + parseInt(count), 0);
+        document.getElementById('start-game-btn').disabled = totalPlayers !== totalRoles || totalPlayers === 0;
     });
 
     socket.on('role_assigned', (data) => {
         myRole = data.role;
-        const roleDisplay = document.getElementById('my-role-display');
-        roleDisplay.innerHTML = `<span class="role-badge role-${myRole.toLowerCase()}">${myRole}</span>`;
+        document.getElementById('my-role-display').textContent = myRole;
     });
 
     socket.on('game_started', () => {
@@ -138,24 +168,37 @@
         hostControls.classList.add('hidden');
     });
 
-    socket.on('you_died', (data) => {
-        logEvent(`Has muerto. Asesino: ${data.killer_name}.`, 'error');
-    });
-
-    socket.on('player_died', (data) => {
-        logEvent(`${data.victim_name} ha muerto. Su rol era: ${data.victim_role}.`, 'info');
-    });
-
-    socket.on('error', (data) => {
-        alert('Error: ' + data.message);
-    });
+    socket.on('you_died', (data) => logEvent(`Has muerto. Asesino: ${data.killer_name}.`, 'error'));
+    socket.on('player_died', (data) => logEvent(`${data.victim_name} ha muerto. Su rol era: ${data.victim_role}.`, 'info'));
+    socket.on('error', (data) => alert('Error: ' + data.message));
 
     // --- Funciones de Utilidad ---
     function showRoom() {
-        lobbySection.classList.add('hidden');
+        selectionSection.classList.add('hidden');
         roomSection.classList.remove('hidden');
+        document.getElementById('main-title').textContent = "Sala de Juego";
         document.getElementById('room-id-display').textContent = myRoomId;
         if (isHost) hostControls.classList.remove('hidden');
+    }
+
+    function updateCustomRolesList() {
+        const list = document.getElementById('custom-roles-list');
+        list.innerHTML = '';
+        for (const roleName in customRoles) {
+            const li = document.createElement('li');
+            li.textContent = `${roleName}: ${customRoles[roleName]}`;
+            const removeBtn = document.createElement('button');
+            removeBtn.textContent = 'X';
+            removeBtn.className = 'remove-role-btn';
+            removeBtn.onclick = () => {
+                delete customRoles[roleName];
+                updateCustomRolesList();
+            };
+            li.appendChild(removeBtn);
+            list.appendChild(li);
+        }
+        // Dispara una actualización de la lista de jugadores para re-evaluar si el botón de start debe estar activo
+        socket.emit('update_players_check', { room_id: myRoomId }); // Necesitaríamos un evento falso o manejarlo localmente
     }
 
     function logEvent(message, type = 'normal') {
