@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Juego de Roles v2.3</title>
+    <title>Juego de Roles v2.4</title>
     <style>
         body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; text-align: center; margin: 0; padding: 20px; }
         .container { max-width: 600px; margin: auto; background-color: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
@@ -17,21 +17,18 @@
         .player-list li.dead { text-decoration: line-through; color: #888; }
         .kill-btn, .remove-role-btn { background-color: #dc3545; border-color: #dc3545; margin-left: 10px; padding: 5px 10px; font-size: 14px; }
         .kill-btn:hover, .remove-role-btn:hover { background-color: #c82333; }
-        #leave-room-btn { background-color: #6c757d; border-color: #6c757d; margin-top: 20px; } /* Estilo para el nuevo botón */
+        #leave-room-btn { background-color: #6c757d; border-color: #6c757d; margin-top: 20px; }
         #game-log { text-align: left; max-height: 150px; overflow-y: auto; background: #2a2a2a; padding: 10px; border-radius: 5px; margin-top: 20px; }
     </style>
 </head>
 <body>
-
 <div class="container">
     <h1 id="main-title">Bienvenido al Juego de Roles</h1>
-
     <div id="name-section">
         <h3>Paso 1: Elige tu nombre</h3>
         <input type="text" id="name" placeholder="Tu Nombre" required>
         <button id="submit-name-btn">Continuar</button>
     </div>
-
     <div id="selection-section" class="hidden">
         <h3>Paso 2: ¿Qué quieres hacer, <span id="player-name-display"></span>?</h3>
         <button id="create-btn">Crear Sala Nueva</button>
@@ -41,10 +38,9 @@
             <button id="join-btn">Unirse</button>
         </div>
     </div>
-    
     <div id="room-section" class="hidden">
         <h2>Sala: <span id="room-id-display"></span></h2>
-        <h3>Tu Rol: <span id="my-role-display">Esperando...</span></h3>
+        <h3>Tu Rol: <span id="my-role-display">Esperando...</span> (<span id="my-status-display">Vivo</span>)</h3>
         <ul id="player-list" class="player-list"></ul>
         <div id="host-controls" class="hidden">
             <hr><h4>Configuración de Roles (Anfitrión)</h4>
@@ -57,25 +53,16 @@
             <button id="start-game-btn" disabled>Empezar Juego</button>
         </div>
         <div id="game-log"><div><strong>Registro de eventos:</strong></div></div>
-        
         <button id="leave-room-btn">Salir de la Sala</button>
     </div>
 </div>
-
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
     const socket = io();
-    let myPlayerId = '', myRoomId = '', myRole = '', myName = '';
+    let myPlayerId = '', myRoomId = '', myRole = '', myName = '', myStatus = 'alive';
     let isHost = false;
     let customRoles = {};
     let players = [];
-
-    // --- Elementos del DOM ---
-    const nameSection = document.getElementById('name-section');
-    const selectionSection = document.getElementById('selection-section');
-    const joinInputSection = document.getElementById('join-input-section');
-    const roomSection = document.getElementById('room-section');
-    const hostControls = document.getElementById('host-controls');
 
     // --- LÓGICA PRINCIPAL AL CARGAR LA PÁGINA ---
     window.onload = () => {
@@ -85,55 +72,30 @@
             socket.emit('reconnect_player', { playerId: myPlayerId });
         }
     };
-
-    // --- Eventos de UI ---
-    document.getElementById('submit-name-btn').onclick = () => {
-        myName = document.getElementById('name').value;
-        if (myName) {
-            nameSection.classList.add('hidden');
-            selectionSection.classList.remove('hidden');
-            document.getElementById('player-name-display').textContent = myName;
-        }
-    };
     
-    document.getElementById('show-join-btn').onclick = () => { joinInputSection.classList.toggle('hidden'); };
+    // --- Lógica de la Interfaz (sin cambios) ---
+    document.getElementById('submit-name-btn').onclick = () => { myName = document.getElementById('name').value; if (myName) { document.getElementById('name-section').classList.add('hidden'); document.getElementById('selection-section').classList.remove('hidden'); document.getElementById('player-name-display').textContent = myName; } };
+    document.getElementById('show-join-btn').onclick = () => { document.getElementById('join-input-section').classList.toggle('hidden'); };
     document.getElementById('create-btn').onclick = () => socket.emit('create_room', { name: myName });
-    document.getElementById('join-btn').onclick = () => {
-        if (document.getElementById('room-code').value) {
-            socket.emit('join_room', { name: myName, room_id: document.getElementById('room-code').value });
-        }
-    };
-    document.getElementById('add-role-btn').onclick = () => {
-        const name = document.getElementById('new-role-name').value;
-        const count = document.getElementById('new-role-count').value;
-        if (name && count > 0) {
-            customRoles[name] = count;
-            document.getElementById('new-role-name').value = '';
-            document.getElementById('new-role-count').value = 1;
-            updateCustomRolesList();
-        }
-    };
+    document.getElementById('join-btn').onclick = () => { if (document.getElementById('room-code').value) { socket.emit('join_room', { name: myName, room_id: document.getElementById('room-code').value }); } };
+    document.getElementById('add-role-btn').onclick = () => { const name = document.getElementById('new-role-name').value; const count = document.getElementById('new-role-count').value; if (name && count > 0) { customRoles[name] = count; document.getElementById('new-role-name').value = ''; document.getElementById('new-role-count').value = 1; updateCustomRolesList(); } };
     document.getElementById('start-game-btn').onclick = () => { socket.emit('start_game', { room_id: myRoomId, roles: customRoles }); };
-    
-    // --- NUEVA LÓGICA PARA EL BOTÓN DE SALIR ---
-    document.getElementById('leave-room-btn').onclick = () => {
-        socket.emit('leave_room', { room_id: myRoomId });
-        resetToLobby();
-    };
+    document.getElementById('leave-room-btn').onclick = () => { socket.emit('leave_room', { room_id: myRoomId }); resetToLobby(); };
 
-    function killPlayer(targetId) {
-        socket.emit('kill_player', { room_id: myRoomId, target_id: targetId });
-    }
+    function killPlayer(targetId) { socket.emit('kill_player', { room_id: myRoomId, target_id: targetId }); }
 
     // --- Escuchar Eventos del Servidor ---
     socket.on('connect', () => { mySid = socket.id; });
     socket.on('room_created', (data) => { saveSession(data.playerId, data.room_id, data.is_host); showRoom(); });
     socket.on('room_joined', (data) => { saveSession(data.playerId, data.room_id, data.is_host); showRoom(); });
     socket.on('session_restored', (data) => {
+        console.log('¡Sesión restaurada con éxito!');
         myRoomId = data.room_id;
         isHost = data.is_host;
         myRole = data.role;
+        myStatus = data.status; // Actualizamos nuestro estado
         document.getElementById('my-role-display').textContent = myRole || 'Esperando...';
+        document.getElementById('my-status-display').textContent = myStatus === 'alive' ? 'Vivo' : 'Muerto';
         showRoom();
     });
     socket.on('update_players', (data) => {
@@ -141,11 +103,21 @@
         const playerList = document.getElementById('player-list');
         playerList.innerHTML = '';
         const isGameStarted = data.game_state === 'in_game';
+
+        // Actualizamos nuestro propio estado por si hemos muerto
+        const myData = players.find(p => p.id === myPlayerId);
+        if (myData) {
+            myStatus = myData.status;
+            document.getElementById('my-status-display').textContent = myStatus === 'alive' ? 'Vivo' : 'Muerto';
+        }
+        
         players.forEach(player => {
             const li = document.createElement('li');
             li.textContent = `${player.name} ${player.id === myPlayerId ? '(Tú)' : ''}`;
             if (player.status === 'dead') li.classList.add('dead');
-            if (isGameStarted && player.status === 'alive' && player.id !== myPlayerId) {
+            
+            // CORRECCIÓN BUG: Solo muestra el botón si YO estoy vivo
+            if (isGameStarted && myStatus === 'alive' && player.status === 'alive' && player.id !== myPlayerId) {
                 const killBtn = document.createElement('button');
                 killBtn.textContent = 'Matar';
                 killBtn.className = 'kill-btn';
@@ -157,98 +129,21 @@
         checkStartButtonState();
     });
     socket.on('role_assigned', (data) => { myRole = data.role; document.getElementById('my-role-display').textContent = myRole; });
-    socket.on('game_started', () => { logEvent('¡El juego ha comenzado!'); hostControls.classList.add('hidden'); });
+    socket.on('game_started', () => { logEvent('¡El juego ha comenzado!'); document.getElementById('host-controls').classList.add('hidden'); });
     socket.on('you_died', (data) => { showNotification('Has sido eliminado', `Asesino: ${data.killer_name}`); });
     socket.on('player_died', (data) => { showNotification('¡Un jugador ha muerto!', `${data.victim_name} (Rol: ${data.victim_role}) ha sido eliminado.`); });
     socket.on('error', (data) => { alert('Error: ' + data.message); });
 
     // --- Funciones de Utilidad ---
-    function saveSession(playerId, roomId, isHostStatus) {
-        localStorage.setItem('playerId', playerId);
-        myPlayerId = playerId;
-        myRoomId = roomId;
-        isHost = isHostStatus;
-    }
-
-    function showRoom() {
-        document.getElementById('name-section').classList.add('hidden');
-        document.getElementById('selection-section').classList.add('hidden');
-        document.getElementById('room-section').classList.remove('hidden');
-        document.getElementById('main-title').textContent = "Sala de Juego";
-        document.getElementById('room-id-display').textContent = myRoomId;
-        if (isHost) hostControls.classList.remove('hidden');
-        requestNotificationPermission();
-    }
-    
-    // --- NUEVA FUNCIÓN PARA RESETEAR LA UI ---
-    function resetToLobby() {
-        // Borramos la sesión para que al recargar no intente reconectar
-        localStorage.removeItem('playerId'); 
-        
-        // Reseteamos las variables locales
-        myPlayerId = '', myRoomId = '', myRole = '', isHost = false;
-        customRoles = {};
-        players = [];
-
-        // Ocultamos la sala y mostramos la sección de selección de nuevo
-        roomSection.classList.add('hidden');
-        selectionSection.classList.remove('hidden');
-        document.getElementById('main-title').textContent = "Juego de Roles";
-        document.getElementById('game-log').innerHTML = '<div><strong>Registro de eventos:</strong></div>';
-        document.getElementById('my-role-display').textContent = 'Esperando...';
-    }
-
-    function updateCustomRolesList() {
-        const list = document.getElementById('custom-roles-list');
-        list.innerHTML = '';
-        for (const roleName in customRoles) {
-            const li = document.createElement('li');
-            li.textContent = `${roleName}: ${customRoles[roleName]}`;
-            const removeBtn = document.createElement('button');
-            removeBtn.textContent = 'X';
-            removeBtn.className = 'remove-role-btn';
-            removeBtn.onclick = () => { delete customRoles[roleName]; updateCustomRolesList(); };
-            li.appendChild(removeBtn);
-            list.appendChild(li);
-        }
-        checkStartButtonState();
-    }
-
-    function checkStartButtonState() {
-        if (!isHost) return;
-        const totalPlayers = players.length;
-        const totalRoles = Object.values(customRoles).reduce((sum, count) => sum + parseInt(count || 0), 0);
-        const startButton = document.getElementById('start-game-btn');
-        startButton.disabled = totalPlayers !== totalRoles || totalPlayers < 3;
-        if (startButton.disabled) {
-            startButton.textContent = (totalPlayers < 3) ? 'Se necesitan 3 o más jugadores' : 'Jugadores y Roles deben coincidir';
-        } else {
-            startButton.textContent = '¡Empezar Juego!';
-        }
-    }
-
-    function logEvent(message, type = 'normal') {
-        const log = document.getElementById('game-log');
-        const entry = document.createElement('div');
-        entry.textContent = message;
-        if (type === 'error') entry.style.color = '#dc3545';
-        if (type === 'info') entry.style.color = '#17a2b8';
-        log.appendChild(entry);
-        log.scrollTop = log.scrollHeight;
-    }
-
-    function requestNotificationPermission() {
-        if ("Notification" in window && Notification.permission !== "denied") {
-            Notification.requestPermission();
-        }
-    }
-
-    function showNotification(title, body) {
-        logEvent(body);
-        if ("Notification" in window && Notification.permission === "granted") {
-            new Notification(title, { body: body, icon: 'https://cdn-icons-png.flaticon.com/512/3039/3039437.png' });
-        }
-    }
+    // (Sin cambios respecto a la v2.3)
+    function saveSession(playerId, roomId, isHostStatus) { localStorage.setItem('playerId', playerId); myPlayerId = playerId; myRoomId = roomId; isHost = isHostStatus; }
+    function showRoom() { document.getElementById('name-section').classList.add('hidden'); document.getElementById('selection-section').classList.add('hidden'); document.getElementById('room-section').classList.remove('hidden'); document.getElementById('main-title').textContent = "Sala de Juego"; document.getElementById('room-id-display').textContent = myRoomId; if (isHost) document.getElementById('host-controls').classList.remove('hidden'); requestNotificationPermission(); }
+    function resetToLobby() { localStorage.removeItem('playerId'); myPlayerId = '', myRoomId = '', myRole = '', isHost = false; customRoles = {}; players = []; roomSection.classList.add('hidden'); selectionSection.classList.remove('hidden'); document.getElementById('main-title').textContent = "Juego de Roles"; document.getElementById('game-log').innerHTML = '<div><strong>Registro de eventos:</strong></div>'; document.getElementById('my-role-display').textContent = 'Esperando...'; }
+    function updateCustomRolesList() { const list = document.getElementById('custom-roles-list'); list.innerHTML = ''; for (const roleName in customRoles) { const li = document.createElement('li'); li.textContent = `${roleName}: ${customRoles[roleName]}`; const removeBtn = document.createElement('button'); removeBtn.textContent = 'X'; removeBtn.className = 'remove-role-btn'; removeBtn.onclick = () => { delete customRoles[roleName]; updateCustomRolesList(); }; li.appendChild(removeBtn); list.appendChild(li); } checkStartButtonState(); }
+    function checkStartButtonState() { if (!isHost) return; const totalPlayers = players.length; const totalRoles = Object.values(customRoles).reduce((sum, count) => sum + parseInt(count || 0), 0); const startButton = document.getElementById('start-game-btn'); startButton.disabled = totalPlayers !== totalRoles || totalPlayers < 3; if (startButton.disabled) { startButton.textContent = (totalPlayers < 3) ? 'Se necesitan 3 o más jugadores' : 'Jugadores y Roles deben coincidir'; } else { startButton.textContent = '¡Empezar Juego!'; } }
+    function logEvent(message, type = 'normal') { const log = document.getElementById('game-log'); const entry = document.createElement('div'); entry.textContent = message; if (type === 'error') entry.style.color = '#dc3545'; if (type === 'info') entry.style.color = '#17a2b8'; log.appendChild(entry); log.scrollTop = log.scrollHeight; }
+    function requestNotificationPermission() { if ("Notification" in window && Notification.permission !== "denied") { Notification.requestPermission(); } }
+    function showNotification(title, body) { logEvent(body); if ("Notification" in window && Notification.permission === "granted") { new Notification(title, { body: body, icon: 'https://cdn-icons-png.flaticon.com/512/3039/3039437.png' }); } }
 </script>
 </body>
 </html>
