@@ -1,4 +1,4 @@
-# app.py (Versión 2.8 - Persistencia de Log y corrección de Race Condition)
+# app.py (Versión 2.9 - Final Robusta)
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room, leave_room, emit
 import random
@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'la-version-definitiva-a-prueba-de-todo'
+app.config['SECRET_KEY'] = 'la-version-final-del-todo'
 socketio = SocketIO(app)
 
 try:
@@ -19,7 +19,6 @@ except Exception as e:
     print(f"No se pudo conectar a Redis: {e}")
     redis_client = None
 
-# --- Funciones de ayuda para Redis ---
 def get_room(room_id):
     if not redis_client: return None
     room_data_json = redis_client.get(room_id)
@@ -35,13 +34,12 @@ def get_all_rooms():
     room_keys = redis_client.keys('*')
     if not room_keys: return {}
     return {key.decode('utf-8'): json.loads(redis_client.get(key)) for key in room_keys}
-
-# --- ¡NUEVA FUNCIÓN DE LOG! ---
 def add_log(room_id, message, type='normal'):
     room = get_room(room_id)
     if not room: return
     timestamp = datetime.now().strftime('%H:%M:%S')
     log_entry = {'message': message, 'type': type, 'timestamp': timestamp}
+    if 'log' not in room: room['log'] = []
     room['log'].append(log_entry)
     save_room(room_id, room)
 
@@ -59,8 +57,8 @@ def handle_reconnect(data):
             player['sid'] = request.sid
             join_room(room_id)
             save_room(room_id, room_data)
-            emit('session_restored', {'room_id': room_id, 'is_host': room_data['host'] == player_id, 'role': player['role'], 'status': player['status']})
-            update_room_state(room_id) # Envía el estado completo
+            emit('session_restored', {'room_id': room_id, 'is_host': room_data.get('host') == player_id, 'role': player.get('role'), 'status': player.get('status')})
+            update_room_state(room_id)
             return
 
 @socketio.on('create_room')
@@ -68,12 +66,7 @@ def handle_create_room(data):
     player_name = data.get('name', 'Anónimo')
     player_id = str(uuid.uuid4())
     room_id = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=5))
-    new_room = {
-        'players': {player_id: {'name': player_name, 'role': None, 'status': 'alive', 'sid': request.sid}},
-        'game_state': 'lobby',
-        'host': player_id,
-        'log': [] # Inicializa el log
-    }
+    new_room = {'players': {player_id: {'name': player_name, 'role': None, 'status': 'alive', 'sid': request.sid}}, 'game_state': 'lobby', 'host': player_id, 'log': []}
     save_room(room_id, new_room)
     add_log(room_id, f"{player_name} ha creado la sala.")
     join_room(room_id)
@@ -119,6 +112,10 @@ def handle_leave_room(data):
         if not room['players']:
             delete_room(room_id)
         else:
+            # Si el anfitrión se va, asigna a otro como anfitrión
+            if room.get('host') == player_id_to_remove:
+                room['host'] = next(iter(room['players']))
+                add_log(room_id, f"{room['players'][room['host']]['name']} es el nuevo anfitrión.")
             save_room(room_id, room)
             update_room_state(room_id)
 
@@ -132,23 +129,16 @@ def handle_start_game(data):
     players_ids = list(room['players'].keys())
     role_list = [role for role, count in data.get('roles', {}).items() for _ in range(int(count))]
     if len(role_list) != len(players_ids): return
-    
     random.shuffle(role_list)
     for player_id, role in zip(players_ids, role_list):
         room['players'][player_id]['role'] = role
-    
     room['game_state'] = 'in_game'
     add_log(room_id, "¡La partida ha comenzado!")
-    
-    # --- LA CORRECCIÓN CLAVE ---
     save_room(room_id, room)
-
     for player_id in players_ids:
         player = room['players'][player_id]
         if player.get('sid'):
             emit('role_assigned', {'role': player['role']}, to=player['sid'])
-    
-    emit('game_started', to=room_id)
     update_room_state(room_id)
 
 @socketio.on('kill_player')
@@ -161,19 +151,15 @@ def handle_kill_player(data):
     killer_info = room['players'].get(killer_id)
     victim_info = room['players'].get(data.get('target_id'))
     if not (killer_info and victim_info and victim_info['status'] == 'alive' and killer_info['status'] == 'alive'): return
-    
     victim_info['status'] = 'dead'
     add_log(room_id, f"{killer_info['name']} ha matado a {victim_info['name']} (Rol: {victim_info['role']}).", 'info')
-    emit('you_died', {'killer_name': killer_info['name']}, to=victim_info.get('sid'))
-    
     if victim_info['role'] == killer_info['role']:
         killer_info['status'] = 'dead'
         add_log(room_id, f"¡FUEGO AMIGO! {killer_info['name']} ha muerto por traición.", 'error')
-        emit('you_died', {'killer_name': 'a ti mismo por traición'}, to=killer_info.get('sid'))
-        
     save_room(room_id, room)
     update_room_state(room_id)
 
+# --- FUNCIÓN CORREGIDA ---
 @socketio.on('end_game')
 def handle_end_game(data):
     room_id = data.get('room_id')
@@ -189,14 +175,20 @@ def handle_end_game(data):
     room['game_state'] = 'lobby'
     add_log(room_id, "El anfitrión ha finalizado la partida. Volviendo al lobby.")
     save_room(room_id, room)
-    emit('game_ended', to=room_id)
+    
+    # Simplemente actualizamos el estado. El cliente se encargará de resetear su UI.
     update_room_state(room_id)
+    print(f"Partida finalizada por el anfitrión en la sala {room_id}.")
 
 def update_room_state(room_id):
     room = get_room(room_id)
     if room:
         player_data = [{'id': pid, 'name': p['name'], 'status': p['status']} for pid, p in room['players'].items()]
-        emit('update_room_state', {'players': player_data, 'game_state': room['game_state'], 'log': room.get('log', [])}, to=room_id)
+        # Notificamos si el jugador actual es el nuevo anfitrión
+        for pid, player in room['players'].items():
+            if player.get('sid'):
+                is_host = room.get('host') == pid
+                emit('update_room_state', {'players': player_data, 'game_state': room['game_state'], 'log': room.get('log', []), 'is_host': is_host}, to=player['sid'])
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=5000)
