@@ -1,4 +1,4 @@
-# app.py (Versión 2.6 - Confirmación de Muerte y Fin de Partida)
+# app.py (Versión 2.7 - Lógica de guardado a prueba de bugs)
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room, leave_room, emit
 import random
@@ -8,10 +8,10 @@ import redis
 import json
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'la-version-final-del-juego-secreto'
+app.config['SECRET_KEY'] = 'la-version-mas-robusta-hasta-la-fecha'
 socketio = SocketIO(app)
 
-# --- CONEXIÓN A REDIS ---
+# --- CONEXIÓN A REDIS Y FUNCIONES DE AYUDA (Sin cambios) ---
 try:
     redis_client = redis.from_url(os.environ.get("REDIS_URL"))
     print("Conectado a Redis con éxito.")
@@ -19,20 +19,16 @@ except Exception as e:
     print(f"No se pudo conectar a Redis: {e}")
     redis_client = None
 
-# --- Funciones de ayuda para interactuar con Redis ---
 def get_room(room_id):
     if not redis_client: return None
     room_data_json = redis_client.get(room_id)
     return json.loads(room_data_json) if room_data_json else None
-
 def save_room(room_id, room_data):
     if not redis_client: return
     redis_client.set(room_id, json.dumps(room_data))
-    
 def delete_room(room_id):
     if not redis_client: return
     redis_client.delete(room_id)
-
 def get_all_rooms():
     if not redis_client: return {}
     room_keys = redis_client.keys('*')
@@ -136,13 +132,25 @@ def handle_start_game(data):
     if len(role_list) != len(players_ids):
         emit('error', {'message': 'El número de roles no coincide con el de jugadores.'})
         return
+    
+    # Asigna los roles en la variable local
     random.shuffle(role_list)
     for player_id, role in zip(players_ids, role_list):
-        player = room['players'][player_id]
-        player['role'] = role
-        emit('role_assigned', {'role': role}, to=player.get('sid'))
+        room['players'][player_id]['role'] = role
+    
+    # Actualiza el estado del juego
     room['game_state'] = 'in_game'
+    
+    # --- ¡LA CORRECCIÓN CLAVE! ---
+    # Primero guardamos todo el estado nuevo en la base de datos permanente.
     save_room(room_id, room)
+    # --- FIN DE LA CORRECCIÓN ---
+
+    # Solo DESPUÉS de guardar, notificamos a los jugadores.
+    for player_id in players_ids:
+        player = room['players'][player_id]
+        emit('role_assigned', {'role': player['role']}, to=player.get('sid'))
+    
     emit('game_started', to=room_id)
     update_player_list(room_id)
 
@@ -169,27 +177,18 @@ def handle_kill_player(data):
     save_room(room_id, room)
     update_player_list(room_id)
 
-# --- ¡NUEVA FUNCIÓN! ---
 @socketio.on('end_game')
 def handle_end_game(data):
     room_id = data.get('room_id')
     room = get_room(room_id)
     if not room: return
-
-    # Verificación de que quien lo pide es el anfitrión
     host_id_request = next((pid for pid, p in room['players'].items() if p.get('sid') == request.sid), None)
-    if not host_id_request or host_id_request != room.get('host'):
-        return
-
-    # Resetea el estado de todos los jugadores
+    if not host_id_request or host_id_request != room.get('host'): return
     for player_id, player in room['players'].items():
         player['role'] = None
         player['status'] = 'alive'
-    
     room['game_state'] = 'lobby'
     save_room(room_id, room)
-
-    # Notifica a todos que el juego ha terminado para que la UI se resetee
     emit('game_ended', to=room_id)
     update_player_list(room_id)
     print(f"Partida finalizada por el anfitrión en la sala {room_id}.")
