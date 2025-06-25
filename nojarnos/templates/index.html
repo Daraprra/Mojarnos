@@ -3,21 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Juego de Roles v2.4</title>
+    <title>Juego de Roles v2.6</title>
     <style>
         body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; text-align: center; margin: 0; padding: 20px; }
         .container { max-width: 600px; margin: auto; background-color: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
         input, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; font-size: 16px; width: calc(100% - 22px); }
-        button { cursor: pointer; background-color: #007bff; border-color: #007bff; width: auto; }
+        button { cursor: pointer; background-color: #007bff; border-color: #007bff; width: auto; transition: background-color 0.2s; }
         button:hover:not(:disabled) { background-color: #0056b3; }
         button:disabled { background-color: #555; border-color: #555; cursor: not-allowed; }
         .hidden { display: none; }
         ul { padding: 0; }
         .player-list li, .role-list li { list-style: none; padding: 8px; margin: 4px 0; background-color: #2a2a2a; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
         .player-list li.dead { text-decoration: line-through; color: #888; }
-        .kill-btn, .remove-role-btn { background-color: #dc3545; border-color: #dc3545; margin-left: 10px; padding: 5px 10px; font-size: 14px; }
-        .kill-btn:hover, .remove-role-btn:hover { background-color: #c82333; }
-        #leave-room-btn { background-color: #6c757d; border-color: #6c757d; margin-top: 20px; }
+        .kill-btn { background-color: #dc3545; }
+        .kill-btn.confirming { background-color: #ffc107; color: #121212; } /* Amarillo para confirmar */
+        .remove-role-btn { background-color: #dc3545; margin-left: 10px; padding: 5px 10px; font-size: 14px; }
+        #leave-room-btn { background-color: #6c757d; margin-top: 10px; }
+        #end-game-btn { background-color: #17a2b8; margin-top: 10px; }
         #game-log { text-align: left; max-height: 150px; overflow-y: auto; background: #2a2a2a; padding: 10px; border-radius: 5px; margin-top: 20px; }
     </style>
 </head>
@@ -54,6 +56,7 @@
         </div>
         <div id="game-log"><div><strong>Registro de eventos:</strong></div></div>
         <button id="leave-room-btn">Salir de la Sala</button>
+        <button id="end-game-btn" class="hidden">Finalizar Partida (Anfitrión)</button>
     </div>
 </div>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -64,7 +67,6 @@
     let customRoles = {};
     let players = [];
 
-    // --- LÓGICA PRINCIPAL AL CARGAR LA PÁGINA ---
     window.onload = () => {
         myPlayerId = localStorage.getItem('playerId');
         if (myPlayerId) {
@@ -73,7 +75,6 @@
         }
     };
     
-    // --- Lógica de la Interfaz (sin cambios) ---
     document.getElementById('submit-name-btn').onclick = () => { myName = document.getElementById('name').value; if (myName) { document.getElementById('name-section').classList.add('hidden'); document.getElementById('selection-section').classList.remove('hidden'); document.getElementById('player-name-display').textContent = myName; } };
     document.getElementById('show-join-btn').onclick = () => { document.getElementById('join-input-section').classList.toggle('hidden'); };
     document.getElementById('create-btn').onclick = () => socket.emit('create_room', { name: myName });
@@ -81,19 +82,35 @@
     document.getElementById('add-role-btn').onclick = () => { const name = document.getElementById('new-role-name').value; const count = document.getElementById('new-role-count').value; if (name && count > 0) { customRoles[name] = count; document.getElementById('new-role-name').value = ''; document.getElementById('new-role-count').value = 1; updateCustomRolesList(); } };
     document.getElementById('start-game-btn').onclick = () => { socket.emit('start_game', { room_id: myRoomId, roles: customRoles }); };
     document.getElementById('leave-room-btn').onclick = () => { socket.emit('leave_room', { room_id: myRoomId }); resetToLobby(); };
+    document.getElementById('end-game-btn').onclick = () => { socket.emit('end_game', { room_id: myRoomId }); };
 
-    function killPlayer(targetId) { socket.emit('kill_player', { room_id: myRoomId, target_id: targetId }); }
+    function handleKillClick(targetId, buttonElement) {
+        if (buttonElement.dataset.confirming === 'true') {
+            socket.emit('kill_player', { room_id: myRoomId, target_id: targetId });
+            // Reset button immediately
+            buttonElement.textContent = 'Matar';
+            buttonElement.classList.remove('confirming');
+            buttonElement.dataset.confirming = 'false';
+        } else {
+            // Reset all other kill buttons
+            document.querySelectorAll('.kill-btn').forEach(btn => {
+                btn.textContent = 'Matar';
+                btn.classList.remove('confirming');
+                btn.dataset.confirming = 'false';
+            });
+            // Set this button to confirming state
+            buttonElement.textContent = '¿Confirmar?';
+            buttonElement.classList.add('confirming');
+            buttonElement.dataset.confirming = 'true';
+        }
+    }
 
     // --- Escuchar Eventos del Servidor ---
     socket.on('connect', () => { mySid = socket.id; });
     socket.on('room_created', (data) => { saveSession(data.playerId, data.room_id, data.is_host); showRoom(); });
     socket.on('room_joined', (data) => { saveSession(data.playerId, data.room_id, data.is_host); showRoom(); });
     socket.on('session_restored', (data) => {
-        console.log('¡Sesión restaurada con éxito!');
-        myRoomId = data.room_id;
-        isHost = data.is_host;
-        myRole = data.role;
-        myStatus = data.status; // Actualizamos nuestro estado
+        myRoomId = data.room_id; isHost = data.is_host; myRole = data.role; myStatus = data.status;
         document.getElementById('my-role-display').textContent = myRole || 'Esperando...';
         document.getElementById('my-status-display').textContent = myStatus === 'alive' ? 'Vivo' : 'Muerto';
         showRoom();
@@ -103,42 +120,52 @@
         const playerList = document.getElementById('player-list');
         playerList.innerHTML = '';
         const isGameStarted = data.game_state === 'in_game';
-
-        // Actualizamos nuestro propio estado por si hemos muerto
+        
         const myData = players.find(p => p.id === myPlayerId);
-        if (myData) {
-            myStatus = myData.status;
-            document.getElementById('my-status-display').textContent = myStatus === 'alive' ? 'Vivo' : 'Muerto';
-        }
+        if (myData) { myStatus = myData.status; document.getElementById('my-status-display').textContent = myStatus === 'alive' ? 'Vivo' : 'Muerto'; }
         
         players.forEach(player => {
             const li = document.createElement('li');
             li.textContent = `${player.name} ${player.id === myPlayerId ? '(Tú)' : ''}`;
             if (player.status === 'dead') li.classList.add('dead');
             
-            // CORRECCIÓN BUG: Solo muestra el botón si YO estoy vivo
             if (isGameStarted && myStatus === 'alive' && player.status === 'alive' && player.id !== myPlayerId) {
                 const killBtn = document.createElement('button');
                 killBtn.textContent = 'Matar';
                 killBtn.className = 'kill-btn';
-                killBtn.onclick = () => killPlayer(player.id);
+                killBtn.dataset.confirming = 'false';
+                killBtn.onclick = () => handleKillClick(player.id, killBtn);
                 li.appendChild(killBtn);
             }
             playerList.appendChild(li);
         });
+        
+        // CORRECCIÓN BUG: La lógica para mostrar/ocultar controles ahora está aquí
+        const hostControls = document.getElementById('host-controls');
+        const endGameBtn = document.getElementById('end-game-btn');
+        if (isHost && !isGameStarted) { hostControls.classList.remove('hidden'); } else { hostControls.classList.add('hidden'); }
+        if (isHost && isGameStarted) { endGameBtn.classList.remove('hidden'); } else { endGameBtn.classList.add('hidden'); }
+
         checkStartButtonState();
     });
     socket.on('role_assigned', (data) => { myRole = data.role; document.getElementById('my-role-display').textContent = myRole; });
-    socket.on('game_started', () => { logEvent('¡El juego ha comenzado!'); document.getElementById('host-controls').classList.add('hidden'); });
+    socket.on('game_started', () => { logEvent('¡El juego ha comenzado!'); });
+    socket.on('game_ended', () => { logEvent('El anfitrión ha finalizado la partida. Volviendo al lobby...', 'info'); resetGameState(); });
     socket.on('you_died', (data) => { showNotification('Has sido eliminado', `Asesino: ${data.killer_name}`); });
     socket.on('player_died', (data) => { showNotification('¡Un jugador ha muerto!', `${data.victim_name} (Rol: ${data.victim_role}) ha sido eliminado.`); });
     socket.on('error', (data) => { alert('Error: ' + data.message); });
 
     // --- Funciones de Utilidad ---
-    // (Sin cambios respecto a la v2.3)
     function saveSession(playerId, roomId, isHostStatus) { localStorage.setItem('playerId', playerId); myPlayerId = playerId; myRoomId = roomId; isHost = isHostStatus; }
-    function showRoom() { document.getElementById('name-section').classList.add('hidden'); document.getElementById('selection-section').classList.add('hidden'); document.getElementById('room-section').classList.remove('hidden'); document.getElementById('main-title').textContent = "Sala de Juego"; document.getElementById('room-id-display').textContent = myRoomId; if (isHost) document.getElementById('host-controls').classList.remove('hidden'); requestNotificationPermission(); }
-    function resetToLobby() { localStorage.removeItem('playerId'); myPlayerId = '', myRoomId = '', myRole = '', isHost = false; customRoles = {}; players = []; roomSection.classList.add('hidden'); selectionSection.classList.remove('hidden'); document.getElementById('main-title').textContent = "Juego de Roles"; document.getElementById('game-log').innerHTML = '<div><strong>Registro de eventos:</strong></div>'; document.getElementById('my-role-display').textContent = 'Esperando...'; }
+    function showRoom() { document.getElementById('name-section').classList.add('hidden'); document.getElementById('selection-section').classList.add('hidden'); document.getElementById('room-section').classList.remove('hidden'); document.getElementById('main-title').textContent = "Sala de Juego"; document.getElementById('room-id-display').textContent = myRoomId; requestNotificationPermission(); }
+    function resetToLobby() { localStorage.removeItem('playerId'); window.location.reload(); }
+    function resetGameState() {
+        myRole = '';
+        customRoles = {};
+        document.getElementById('my-role-display').textContent = 'Esperando...';
+        document.getElementById('custom-roles-list').innerHTML = '';
+        // El servidor enviará un update_players que limpiará el resto
+    }
     function updateCustomRolesList() { const list = document.getElementById('custom-roles-list'); list.innerHTML = ''; for (const roleName in customRoles) { const li = document.createElement('li'); li.textContent = `${roleName}: ${customRoles[roleName]}`; const removeBtn = document.createElement('button'); removeBtn.textContent = 'X'; removeBtn.className = 'remove-role-btn'; removeBtn.onclick = () => { delete customRoles[roleName]; updateCustomRolesList(); }; li.appendChild(removeBtn); list.appendChild(li); } checkStartButtonState(); }
     function checkStartButtonState() { if (!isHost) return; const totalPlayers = players.length; const totalRoles = Object.values(customRoles).reduce((sum, count) => sum + parseInt(count || 0), 0); const startButton = document.getElementById('start-game-btn'); startButton.disabled = totalPlayers !== totalRoles || totalPlayers < 3; if (startButton.disabled) { startButton.textContent = (totalPlayers < 3) ? 'Se necesitan 3 o más jugadores' : 'Jugadores y Roles deben coincidir'; } else { startButton.textContent = '¡Empezar Juego!'; } }
     function logEvent(message, type = 'normal') { const log = document.getElementById('game-log'); const entry = document.createElement('div'); entry.textContent = message; if (type === 'error') entry.style.color = '#dc3545'; if (type === 'info') entry.style.color = '#17a2b8'; log.appendChild(entry); log.scrollTop = log.scrollHeight; }
