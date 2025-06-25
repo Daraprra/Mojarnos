@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Juego de Roles v2.6</title>
+    <title>Juego de Roles v2.8</title>
     <style>
         body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; text-align: center; margin: 0; padding: 20px; }
         .container { max-width: 600px; margin: auto; background-color: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
@@ -16,11 +16,15 @@
         .player-list li, .role-list li { list-style: none; padding: 8px; margin: 4px 0; background-color: #2a2a2a; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
         .player-list li.dead { text-decoration: line-through; color: #888; }
         .kill-btn { background-color: #dc3545; }
-        .kill-btn.confirming { background-color: #ffc107; color: #121212; } /* Amarillo para confirmar */
+        .kill-btn.confirming { background-color: #ffc107; color: #121212; }
         .remove-role-btn { background-color: #dc3545; margin-left: 10px; padding: 5px 10px; font-size: 14px; }
         #leave-room-btn { background-color: #6c757d; margin-top: 10px; }
         #end-game-btn { background-color: #17a2b8; margin-top: 10px; }
         #game-log { text-align: left; max-height: 150px; overflow-y: auto; background: #2a2a2a; padding: 10px; border-radius: 5px; margin-top: 20px; }
+        #game-log div { padding: 2px 0; border-bottom: 1px solid #333; }
+        #game-log div:last-child { border-bottom: none; }
+        .log-error { color: #dc3545; }
+        .log-info { color: #17a2b8; }
     </style>
 </head>
 <body>
@@ -54,7 +58,7 @@
             <ul id="custom-roles-list" class="role-list"></ul>
             <button id="start-game-btn" disabled>Empezar Juego</button>
         </div>
-        <div id="game-log"><div><strong>Registro de eventos:</strong></div></div>
+        <div id="game-log"></div>
         <button id="leave-room-btn">Salir de la Sala</button>
         <button id="end-game-btn" class="hidden">Finalizar Partida (Anfitrión)</button>
     </div>
@@ -75,6 +79,7 @@
         }
     };
     
+    // --- Lógica de UI (sin cambios) ---
     document.getElementById('submit-name-btn').onclick = () => { myName = document.getElementById('name').value; if (myName) { document.getElementById('name-section').classList.add('hidden'); document.getElementById('selection-section').classList.remove('hidden'); document.getElementById('player-name-display').textContent = myName; } };
     document.getElementById('show-join-btn').onclick = () => { document.getElementById('join-input-section').classList.toggle('hidden'); };
     document.getElementById('create-btn').onclick = () => socket.emit('create_room', { name: myName });
@@ -87,18 +92,15 @@
     function handleKillClick(targetId, buttonElement) {
         if (buttonElement.dataset.confirming === 'true') {
             socket.emit('kill_player', { room_id: myRoomId, target_id: targetId });
-            // Reset button immediately
             buttonElement.textContent = 'Matar';
             buttonElement.classList.remove('confirming');
             buttonElement.dataset.confirming = 'false';
         } else {
-            // Reset all other kill buttons
             document.querySelectorAll('.kill-btn').forEach(btn => {
                 btn.textContent = 'Matar';
                 btn.classList.remove('confirming');
                 btn.dataset.confirming = 'false';
             });
-            // Set this button to confirming state
             buttonElement.textContent = '¿Confirmar?';
             buttonElement.classList.add('confirming');
             buttonElement.dataset.confirming = 'true';
@@ -115,7 +117,9 @@
         document.getElementById('my-status-display').textContent = myStatus === 'alive' ? 'Vivo' : 'Muerto';
         showRoom();
     });
-    socket.on('update_players', (data) => {
+
+    // ¡NUEVO! Un único evento para actualizar todo el estado de la sala.
+    socket.on('update_room_state', (data) => {
         players = data.players;
         const playerList = document.getElementById('player-list');
         playerList.innerHTML = '';
@@ -140,7 +144,8 @@
             playerList.appendChild(li);
         });
         
-        // CORRECCIÓN BUG: La lógica para mostrar/ocultar controles ahora está aquí
+        updateLog(data.log); // Actualiza el log
+        
         const hostControls = document.getElementById('host-controls');
         const endGameBtn = document.getElementById('end-game-btn');
         if (isHost && !isGameStarted) { hostControls.classList.remove('hidden'); } else { hostControls.classList.add('hidden'); }
@@ -148,11 +153,11 @@
 
         checkStartButtonState();
     });
+
     socket.on('role_assigned', (data) => { myRole = data.role; document.getElementById('my-role-display').textContent = myRole; });
-    socket.on('game_started', () => { logEvent('¡El juego ha comenzado!'); });
-    socket.on('game_ended', () => { logEvent('El anfitrión ha finalizado la partida. Volviendo al lobby...', 'info'); resetGameState(); });
+    socket.on('game_started', () => { /* Ya no necesitamos hacer nada aquí, update_room_state lo gestiona */ });
+    socket.on('game_ended', () => { resetGameState(); });
     socket.on('you_died', (data) => { showNotification('Has sido eliminado', `Asesino: ${data.killer_name}`); });
-    socket.on('player_died', (data) => { showNotification('¡Un jugador ha muerto!', `${data.victim_name} (Rol: ${data.victim_role}) ha sido eliminado.`); });
     socket.on('error', (data) => { alert('Error: ' + data.message); });
 
     // --- Funciones de Utilidad ---
@@ -160,17 +165,34 @@
     function showRoom() { document.getElementById('name-section').classList.add('hidden'); document.getElementById('selection-section').classList.add('hidden'); document.getElementById('room-section').classList.remove('hidden'); document.getElementById('main-title').textContent = "Sala de Juego"; document.getElementById('room-id-display').textContent = myRoomId; requestNotificationPermission(); }
     function resetToLobby() { localStorage.removeItem('playerId'); window.location.reload(); }
     function resetGameState() {
-        myRole = '';
-        customRoles = {};
+        myRole = ''; customRoles = {};
         document.getElementById('my-role-display').textContent = 'Esperando...';
         document.getElementById('custom-roles-list').innerHTML = '';
-        // El servidor enviará un update_players que limpiará el resto
     }
     function updateCustomRolesList() { const list = document.getElementById('custom-roles-list'); list.innerHTML = ''; for (const roleName in customRoles) { const li = document.createElement('li'); li.textContent = `${roleName}: ${customRoles[roleName]}`; const removeBtn = document.createElement('button'); removeBtn.textContent = 'X'; removeBtn.className = 'remove-role-btn'; removeBtn.onclick = () => { delete customRoles[roleName]; updateCustomRolesList(); }; li.appendChild(removeBtn); list.appendChild(li); } checkStartButtonState(); }
     function checkStartButtonState() { if (!isHost) return; const totalPlayers = players.length; const totalRoles = Object.values(customRoles).reduce((sum, count) => sum + parseInt(count || 0), 0); const startButton = document.getElementById('start-game-btn'); startButton.disabled = totalPlayers !== totalRoles || totalPlayers < 3; if (startButton.disabled) { startButton.textContent = (totalPlayers < 3) ? 'Se necesitan 3 o más jugadores' : 'Jugadores y Roles deben coincidir'; } else { startButton.textContent = '¡Empezar Juego!'; } }
-    function logEvent(message, type = 'normal') { const log = document.getElementById('game-log'); const entry = document.createElement('div'); entry.textContent = message; if (type === 'error') entry.style.color = '#dc3545'; if (type === 'info') entry.style.color = '#17a2b8'; log.appendChild(entry); log.scrollTop = log.scrollHeight; }
+    
+    // ¡NUEVA! Función para dibujar el log
+    function updateLog(logMessages) {
+        const log = document.getElementById('game-log');
+        log.innerHTML = '<div><strong>Registro de eventos:</strong></div>'; // Limpia el log
+        logMessages.forEach(entry => {
+            const div = document.createElement('div');
+            div.textContent = `[${entry.timestamp}] ${entry.message}`;
+            if (entry.type === 'error') div.classList.add('log-error');
+            if (entry.type === 'info') div.classList.add('log-info');
+            log.appendChild(div);
+        });
+        log.scrollTop = log.scrollHeight; // Auto-scroll hacia abajo
+    }
+
     function requestNotificationPermission() { if ("Notification" in window && Notification.permission !== "denied") { Notification.requestPermission(); } }
-    function showNotification(title, body) { logEvent(body); if ("Notification" in window && Notification.permission === "granted") { new Notification(title, { body: body, icon: 'https://cdn-icons-png.flaticon.com/512/3039/3039437.png' }); } }
+    function showNotification(title, body) {
+        // Las notificaciones ahora se basan en el log, por lo que no necesitamos duplicar el mensaje aquí
+        if ("Notification" in window && Notification.permission === "granted") {
+            new Notification(title, { body: body, icon: 'https://cdn-icons-png.flaticon.com/512/3039/3039437.png' });
+        }
+    }
 </script>
 </body>
 </html>
